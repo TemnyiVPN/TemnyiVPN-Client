@@ -1,0 +1,51 @@
+﻿name: entropy_vpn
+description: "Windows VPN client for Xray-core and Sing-box."
+publish_to: 'none'
+
+version: 1.8.2+14
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+
+  path: ^1.9.1
+  image_picker: ^1.2.2
+  mobile_scanner: ^7.2.0
+  file_picker: ^11.0.2
+  pasteboard: ^0.5.0
+  qr_code_dart_decoder: ^0.1.2
+  ffi: ^2.2.0
+  url_launcher: ^6.3.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^6.0.0
+  flutter_svg: ^2.3.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - pubspec.yaml
+    - entropylogo.png
+    - assets/flags/
+    - assets/fonts/GolosText-Regular.ttf
+
+  fonts:
+    - family: GolosText
+      fonts:
+        - asset: assets/fonts/GolosText-Variable.ttf
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Variable.ttf
+    - family: TwemojiMozilla
+      fonts:
+        - asset: assets/fonts/Twemoji.Mozilla.ttf
+

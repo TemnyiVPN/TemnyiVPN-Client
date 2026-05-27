@@ -1,0 +1,546 @@
+#include "entropy_vpn_service_commands.h"
+
+#include "entropy_vpn_killswitch.h"
+#include "entropy_vpn_service_common.h"
+#include "entropy_vpn_service_tun.h"
+#include "entropy_vpn_service_updater.h"
+
+#include <mutex>
+#include <thread>
+#include <unordered_set>
+#include <vector>
+
+namespace entropy_vpn_service {
+
+std::mutex g_core_mutex;
+HANDLE g_core_process = nullptr;
+DWORD g_core_pid = 0;
+DWORD g_core_exit_code = 0;
+bool g_core_has_exit_code = false;
+std::wstring g_core_run_id;
+
+using NtProcessFn = LONG(WINAPI*)(HANDLE);
+
+bool IsInterferenceProcessName(const std::string& path) {
+  const std::string name = LowerPathNameKey(path);
+  if (name.empty()) {
+    return false;
+  }
+  static const std::unordered_set<std::string> exact = {
+      "zapret", "winws", "nfqws", "tpws", "goodbyedpi", "goodbyedpi_gui",
+      "byedpi", "ciadpi", "powertunnel", "power-tunnel", "greentunnel"};
+  if (exact.find(name) != exact.end()) {
+    return true;
+  }
+  return ContainsToken(name, "zapret") || ContainsToken(name, "winws") ||
+         ContainsToken(name, "nfqws") || ContainsToken(name, "tpws") ||
+         ContainsToken(name, "goodbyedpi") || ContainsToken(name, "byedpi") ||
+         ContainsToken(name, "ciadpi") || ContainsToken(name, "powertunnel") ||
+         ContainsToken(name, "power-tunnel") ||
+         ContainsToken(name, "greentunnel");
+}
+
+bool SelectedPid(const std::unordered_set<DWORD>& selected_pids, DWORD pid) {
+  return selected_pids.empty() || selected_pids.find(pid) != selected_pids.end();
+}
+
+std::string JoinPids(const std::vector<DWORD>& pids) {
+  std::string joined;
+  for (DWORD pid : pids) {
+    if (!joined.empty()) {
+      joined.push_back(',');
+    }
+    joined.append(std::to_string(pid));
+  }
+  return joined;
+}
+
+DWORD NtStatusToWin32(LONG status) {
+  if (status == 0) {
+    return NO_ERROR;
+  }
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) {
+    return ERROR_GEN_FAILURE;
+  }
+  using RtlNtStatusToDosErrorFn = ULONG(WINAPI*)(LONG);
+  auto convert = reinterpret_cast<RtlNtStatusToDosErrorFn>(
+      GetProcAddress(ntdll, "RtlNtStatusToDosError"));
+  return convert == nullptr ? ERROR_GEN_FAILURE : convert(status);
+}
+
+DWORD ApplyNtProcessAction(DWORD pid, const std::string& action) {
+  HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  if (ntdll == nullptr) {
+    return ERROR_PROC_NOT_FOUND;
+  }
+  const char* proc_name =
+      action == "resume" ? "NtResumeProcess" : "NtSuspendProcess";
+  auto fn = reinterpret_cast<NtProcessFn>(GetProcAddress(ntdll, proc_name));
+  if (fn == nullptr) {
+    return ERROR_PROC_NOT_FOUND;
+  }
+  ScopedHandle process(
+      OpenProcess(PROCESS_SUSPEND_RESUME | SYNCHRONIZE, FALSE, pid));
+  if (process.get() == nullptr) {
+    return GetLastError();
+  }
+  return NtStatusToWin32(fn(process.get()));
+}
+
+void CloseCoreLocked() {
+  if (g_core_process != nullptr) {
+    CloseHandle(g_core_process);
+    g_core_process = nullptr;
+  }
+  g_core_pid = 0;
+  g_core_run_id.clear();
+}
+
+void RefreshCoreExitLocked() {
+  if (g_core_process == nullptr) {
+    return;
+  }
+  const DWORD wait = WaitForSingleObject(g_core_process, 0);
+  if (wait != WAIT_OBJECT_0) {
+    return;
+  }
+  DWORD exit_code = 0;
+  if (GetExitCodeProcess(g_core_process, &exit_code) != 0) {
+    g_core_exit_code = exit_code;
+    g_core_has_exit_code = true;
+  }
+  CloseCoreLocked();
+}
+
+std::string StatusCore(const std::map<std::string, std::string>& fields) {
+  const std::wstring run_id = ReadDecodedWide(fields, "runId");
+  std::lock_guard<std::mutex> lock(g_core_mutex);
+  RefreshCoreExitLocked();
+  const bool matches =
+      !run_id.empty() && !g_core_run_id.empty() && run_id == g_core_run_id;
+  const bool running = g_core_process != nullptr && (run_id.empty() || matches);
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"running", running ? "1" : "0"});
+  response.push_back({"pid", std::to_string(running ? g_core_pid : 0)});
+  if (!running && g_core_has_exit_code) {
+    response.push_back({"exitCode", std::to_string(g_core_exit_code)});
+  }
+  return BuildResponse(response);
+}
+
+std::string StopCore(const std::map<std::string, std::string>& fields) {
+  const std::wstring run_id = ReadDecodedWide(fields, "runId");
+  HANDLE process = nullptr;
+  DWORD pid = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
+    RefreshCoreExitLocked();
+    if (g_core_process == nullptr) {
+      return BuildResponse({{"ok", "1"}, {"stopped", "0"}, {"exitCode", "0"}});
+    }
+    if (!run_id.empty() && !g_core_run_id.empty() && run_id != g_core_run_id) {
+      return ErrorResponse("A different TemnyiVPN core run is active.",
+                           ERROR_BUSY);
+    }
+    process = g_core_process;
+    pid = g_core_pid;
+    g_core_process = nullptr;
+    g_core_pid = 0;
+    g_core_run_id.clear();
+  }
+
+  TerminateProcess(process, 0);
+  WaitForSingleObject(process, 5000);
+  DWORD exit_code = 0;
+  GetExitCodeProcess(process, &exit_code);
+  CloseHandle(process);
+
+  std::lock_guard<std::mutex> lock(g_core_mutex);
+  g_core_exit_code = exit_code;
+  g_core_has_exit_code = true;
+  return BuildResponse({{"ok", "1"},
+                        {"stopped", "1"},
+                        {"pid", std::to_string(pid)},
+                        {"exitCode", std::to_string(exit_code)}});
+}
+
+std::string StartCore(const std::map<std::string, std::string>& fields) {
+  const std::wstring run_id = ReadDecodedWide(fields, "runId");
+  const std::wstring executable = ReadDecodedWide(fields, "executable");
+  const std::wstring working_directory =
+      ReadDecodedWide(fields, "workingDirectory");
+  const std::wstring stdout_path = ReadDecodedWide(fields, "stdoutPath");
+  const std::wstring stderr_path = ReadDecodedWide(fields, "stderrPath");
+  const std::vector<std::wstring> args = ReadArguments(fields);
+  if (run_id.empty() || executable.empty() || stdout_path.empty() ||
+      stderr_path.empty()) {
+    return ErrorResponse("Missing required start_core arguments.",
+                         ERROR_INVALID_PARAMETER);
+  }
+  const std::wstring resolved_executable = ResolveAllowedCoreExecutable(executable);
+  if (resolved_executable.empty()) {
+    return ErrorResponse("Service helper rejected a core executable outside the installed cores directory.",
+                         ERROR_ACCESS_DENIED);
+  }
+
+  HANDLE old_process = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
+    RefreshCoreExitLocked();
+    old_process = g_core_process;
+    g_core_process = nullptr;
+    g_core_pid = 0;
+    g_core_run_id.clear();
+  }
+  if (old_process != nullptr) {
+    TerminateProcess(old_process, 0);
+    WaitForSingleObject(old_process, 5000);
+    CloseHandle(old_process);
+  }
+
+  SECURITY_ATTRIBUTES inherit_security{};
+  inherit_security.nLength = sizeof(inherit_security);
+  inherit_security.bInheritHandle = TRUE;
+
+  HANDLE stdout_file = CreateFileW(
+      stdout_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                          FILE_SHARE_DELETE,
+      &inherit_security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (stdout_file == INVALID_HANDLE_VALUE) {
+    return ErrorResponse("Could not open core stdout log: " +
+                             ErrorMessage(GetLastError()),
+                         GetLastError());
+  }
+
+  HANDLE stderr_file = CreateFileW(
+      stderr_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                          FILE_SHARE_DELETE,
+      &inherit_security, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (stderr_file == INVALID_HANDLE_VALUE) {
+    const DWORD error = GetLastError();
+    CloseHandle(stdout_file);
+    return ErrorResponse("Could not open core stderr log: " +
+                             ErrorMessage(error),
+                         error);
+  }
+
+  HANDLE nul_file = CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ,
+                                &inherit_security, OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL, nullptr);
+
+  STARTUPINFOW startup_info{};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdInput = nul_file == INVALID_HANDLE_VALUE ? nullptr : nul_file;
+  startup_info.hStdOutput = stdout_file;
+  startup_info.hStdError = stderr_file;
+
+  PROCESS_INFORMATION process_info{};
+  std::wstring command_line = BuildCommandLine(resolved_executable, args);
+  const BOOL created = CreateProcessW(
+      resolved_executable.c_str(), command_line.data(), nullptr, nullptr, TRUE,
+      CREATE_NO_WINDOW, nullptr,
+      working_directory.empty() ? nullptr : working_directory.c_str(),
+      &startup_info, &process_info);
+  const DWORD create_error = GetLastError();
+
+  CloseHandleIfValid(&nul_file);
+  CloseHandleIfValid(&stdout_file);
+  CloseHandleIfValid(&stderr_file);
+
+  if (created == 0) {
+    return ErrorResponse("Could not start core process: " +
+                             ErrorMessage(create_error),
+                         create_error);
+  }
+  CloseHandle(process_info.hThread);
+
+  {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
+    g_core_process = process_info.hProcess;
+    g_core_pid = process_info.dwProcessId;
+    g_core_run_id = run_id;
+    g_core_has_exit_code = false;
+    g_core_exit_code = 0;
+  }
+
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"pid", std::to_string(process_info.dwProcessId)});
+  AddTextField(&response, "executableB64", Utf8FromWide(resolved_executable));
+  return BuildResponse(response);
+}
+
+std::string RunAllowedProcess(
+    const std::map<std::string, std::string>& fields) {
+  const std::wstring executable = ReadDecodedWide(fields, "executable");
+  const std::wstring working_directory =
+      ReadDecodedWide(fields, "workingDirectory");
+  const std::vector<std::wstring> args = ReadArguments(fields);
+  const DWORD timeout_ms = ReadDword(fields, "timeoutMs", 30000);
+  if (executable.empty() || !IsAllowedToolInvocation(executable, args)) {
+    return ErrorResponse("Service helper rejected a non-allowlisted tool.",
+                         ERROR_ACCESS_DENIED);
+  }
+
+  SECURITY_ATTRIBUTES pipe_security{};
+  pipe_security.nLength = sizeof(pipe_security);
+  pipe_security.bInheritHandle = TRUE;
+
+  HANDLE stdout_read = nullptr;
+  HANDLE stdout_write = nullptr;
+  HANDLE stderr_read = nullptr;
+  HANDLE stderr_write = nullptr;
+  if (CreatePipe(&stdout_read, &stdout_write, &pipe_security, 0) == 0 ||
+      CreatePipe(&stderr_read, &stderr_write, &pipe_security, 0) == 0) {
+    const DWORD error = GetLastError();
+    CloseHandleIfValid(&stdout_read);
+    CloseHandleIfValid(&stdout_write);
+    CloseHandleIfValid(&stderr_read);
+    CloseHandleIfValid(&stderr_write);
+    return ErrorResponse("Could not create capture pipes: " +
+                             ErrorMessage(error),
+                         error);
+  }
+  SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0);
+  SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0);
+
+  STARTUPINFOW startup_info{};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdOutput = stdout_write;
+  startup_info.hStdError = stderr_write;
+  startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+
+  PROCESS_INFORMATION process_info{};
+  std::wstring command_line = BuildCommandLine(executable, args);
+  const BOOL created = CreateProcessW(
+      nullptr, command_line.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW,
+      nullptr, working_directory.empty() ? nullptr : working_directory.c_str(),
+      &startup_info, &process_info);
+  const DWORD create_error = GetLastError();
+  CloseHandleIfValid(&stdout_write);
+  CloseHandleIfValid(&stderr_write);
+  if (created == 0) {
+    CloseHandleIfValid(&stdout_read);
+    CloseHandleIfValid(&stderr_read);
+    return ErrorResponse("Could not run allowlisted tool: " +
+                             ErrorMessage(create_error),
+                         create_error);
+  }
+
+  std::string stdout_text;
+  std::string stderr_text;
+  std::thread stdout_thread(ReadPipeToString, stdout_read, &stdout_text);
+  std::thread stderr_thread(ReadPipeToString, stderr_read, &stderr_text);
+
+  bool timed_out = false;
+  DWORD wait_result = WaitForSingleObject(process_info.hProcess, timeout_ms);
+  if (wait_result == WAIT_TIMEOUT) {
+    timed_out = true;
+    TerminateProcess(process_info.hProcess, WAIT_TIMEOUT);
+    WaitForSingleObject(process_info.hProcess, 5000);
+  }
+
+  DWORD exit_code = 1;
+  GetExitCodeProcess(process_info.hProcess, &exit_code);
+  CloseHandle(process_info.hThread);
+  CloseHandle(process_info.hProcess);
+  stdout_thread.join();
+  stderr_thread.join();
+  CloseHandleIfValid(&stdout_read);
+  CloseHandleIfValid(&stderr_read);
+
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"pid", std::to_string(process_info.dwProcessId)});
+  response.push_back({"exitCode", std::to_string(exit_code)});
+  response.push_back({"timedOut", timed_out ? "1" : "0"});
+  AddTextField(&response, "stdoutB64", stdout_text);
+  AddTextField(&response, "stderrB64", stderr_text);
+  return BuildResponse(response);
+}
+
+std::string EngageKillswitchCommand(
+    const std::map<std::string, std::string>& fields) {
+  std::vector<std::wstring> permit_paths;
+  for (size_t i = 0; i < 8; ++i) {
+    const std::wstring path =
+        ReadDecodedWide(fields, "permitExe" + std::to_string(i));
+    if (!path.empty()) {
+      permit_paths.push_back(path);
+    }
+  }
+  std::string error_step;
+  const DWORD result = EngageKillswitch(permit_paths, &error_step);
+  if (result != NO_ERROR) {
+    return ErrorResponse(
+        "Killswitch engage failed at " +
+            (error_step.empty() ? std::string("unknown") : error_step) + ": " +
+            ErrorMessage(result),
+        result);
+  }
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"mode", "wfp"});
+  response.push_back(
+      {"permitCount", std::to_string(permit_paths.size())});
+  return BuildResponse(response);
+}
+
+std::string DisengageKillswitchCommand(
+    const std::map<std::string, std::string>& fields) {
+  (void)fields;
+  bool changed = false;
+  const DWORD result = DisengageKillswitch(&changed);
+  if (result != NO_ERROR) {
+    return ErrorResponse(
+        "Killswitch disengage failed: " + ErrorMessage(result), result);
+  }
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"changed", changed ? "1" : "0"});
+  return BuildResponse(response);
+}
+
+std::string ManageInterferenceProcesses(
+    const std::map<std::string, std::string>& fields) {
+  const auto action_field = fields.find("action");
+  const std::string action =
+      action_field == fields.end() ? std::string() : action_field->second;
+  if (action != "terminate" && action != "suspend" && action != "resume") {
+    return ErrorResponse("Invalid interference process action.",
+                         ERROR_INVALID_PARAMETER);
+  }
+
+  std::unordered_set<DWORD> selected_pids;
+  const std::vector<std::wstring> args = ReadArguments(fields);
+  for (const std::wstring& arg : args) {
+    const DWORD pid =
+        static_cast<DWORD>(std::wcstoul(arg.c_str(), nullptr, 10));
+    if (pid != 0 && pid != GetCurrentProcessId()) {
+      selected_pids.insert(pid);
+    }
+  }
+  if (selected_pids.empty()) {
+    return ErrorResponse("No process IDs were provided.",
+                         ERROR_INVALID_PARAMETER);
+  }
+
+  std::vector<ProcessSnapshotEntry> processes;
+  const DWORD snapshot_result = SnapshotProcesses(&processes);
+  if (snapshot_result != NO_ERROR) {
+    return ErrorResponse("Could not snapshot processes: " +
+                             ErrorMessage(snapshot_result),
+                         snapshot_result);
+  }
+
+  std::vector<DWORD> affected;
+  std::vector<DWORD> failed;
+  DWORD first_error = NO_ERROR;
+  std::string first_error_message;
+  for (const ProcessSnapshotEntry& process : processes) {
+    if (!SelectedPid(selected_pids, process.pid) ||
+        !IsInterferenceProcessName(process.path)) {
+      continue;
+    }
+
+    DWORD result = NO_ERROR;
+    if (action == "terminate") {
+      const ProcessTerminationResult terminated =
+          TerminateSingleProcess(process.pid, 5000);
+      result = terminated.success ? NO_ERROR : terminated.error;
+    } else {
+      result = ApplyNtProcessAction(process.pid, action);
+    }
+
+    if (result == NO_ERROR) {
+      affected.push_back(process.pid);
+    } else {
+      failed.push_back(process.pid);
+      if (first_error == NO_ERROR) {
+        first_error = result;
+        first_error_message = ErrorMessage(result);
+      }
+    }
+  }
+
+  std::vector<std::pair<std::string, std::string>> response;
+  response.push_back({"ok", "1"});
+  response.push_back({"affectedPids", JoinPids(affected)});
+  response.push_back({"failedPids", JoinPids(failed)});
+  response.push_back({"affectedCount", std::to_string(affected.size())});
+  response.push_back({"failedCount", std::to_string(failed.size())});
+  response.push_back({"errorCode", std::to_string(first_error)});
+  AddTextField(&response, "errorB64", first_error_message);
+  return BuildResponse(response);
+}
+
+std::string HandleRequest(const std::string& request_text) {
+  const auto fields = ParseFields(request_text);
+  const auto command = fields.find("command");
+  if (command == fields.end()) {
+    return ErrorResponse("Missing service command.", ERROR_INVALID_PARAMETER);
+  }
+  if (command->second == "ping") {
+    return OkResponse();
+  }
+  if (command->second == "start_core") {
+    return StartCore(fields);
+  }
+  if (command->second == "stop_core") {
+    return StopCore(fields);
+  }
+  if (command->second == "status_core") {
+    return StatusCore(fields);
+  }
+  if (command->second == "run_process") {
+    return RunAllowedProcess(fields);
+  }
+  if (command->second == "prepare_ipv4_server_route") {
+    return PrepareIpv4ServerRouteNative(fields);
+  }
+  if (command->second == "prepare_domain_server_route") {
+    return PrepareDomainServerRouteNative(fields);
+  }
+  if (command->second == "prepare_xray_tun_ipv4_routes") {
+    return PrepareXrayTunIpv4RoutesNative(fields);
+  }
+  if (command->second == "prewarm_tun_adapter") {
+    return PrewarmTunAdapterNative(fields);
+  }
+  if (command->second == "release_tun_adapter") {
+    return ReleaseTunAdapterNative(fields);
+  }
+  if (command->second == "engage_killswitch") {
+    return EngageKillswitchCommand(fields);
+  }
+  if (command->second == "disengage_killswitch") {
+    return DisengageKillswitchCommand(fields);
+  }
+  if (command->second == "manage_interference_processes") {
+    return ManageInterferenceProcesses(fields);
+  }
+  if (command->second == "update_check_now") {
+    return UpdateCheckNow(fields);
+  }
+  if (command->second == "update_status") {
+    return UpdateStatus(fields);
+  }
+  if (command->second == "update_apply") {
+    return UpdateApply(fields);
+  }
+  return ErrorResponse("Unknown service command.", ERROR_INVALID_PARAMETER);
+}
+
+void StopActiveCore() {
+  std::lock_guard<std::mutex> lock(g_core_mutex);
+  if (g_core_process != nullptr) {
+    TerminateProcess(g_core_process, 0);
+    WaitForSingleObject(g_core_process, 5000);
+    CloseCoreLocked();
+  }
+}
+}  // namespace entropy_vpn_service

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=TemnyiVPN
+GenericName=VPN Client
+Comment=Xray-core and sing-box VPN client
+Exec=entropy_vpn %U
+Icon=entropy_vpn
+Terminal=false
+Categories=Network;
+StartupWMClass=TemnyiVPN
+Keywords=VPN;proxy;xray;sing-box;

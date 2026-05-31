@@ -3,15 +3,19 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'l10n/app_strings.dart';
 import 'models/dns_settings.dart';
 import 'models/split_tunnel.dart';
 import 'models/vpn_profile.dart';
+import 'main_update_notification.dart';
+import 'services/app_update_service.dart';
 import 'services/vpn_controller.dart';
 
 part 'main_settings_common.dart';
 part 'main_settings_notifications.dart';
+part 'main_settings_updates.dart';
 part 'main_settings_dns.dart';
 part 'main_settings_split_tunnel.dart';
 part 'main_settings_about.dart';

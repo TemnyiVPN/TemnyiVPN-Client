@@ -13,6 +13,11 @@ val releaseKeystoreProperties = Properties().apply {
         releaseKeystorePropertiesFile.inputStream().use(::load)
     }
 }
+val hasReleaseKeystore =
+    releaseKeystoreProperties.getProperty("storeFile")?.isNotBlank() == true &&
+        releaseKeystoreProperties.getProperty("keyAlias")?.isNotBlank() == true &&
+        releaseKeystoreProperties.getProperty("keyPassword")?.isNotBlank() == true &&
+        releaseKeystoreProperties.getProperty("storePassword")?.isNotBlank() == true
 
 val androidAbis = listOf("arm64-v8a", "armeabi-v7a")
 val splitPerAbi = (findProperty("split-per-abi") as? String)?.toBoolean() == true
@@ -90,6 +95,12 @@ android {
 
     buildTypes {
         release {
+            if (!hasReleaseKeystore) {
+                throw GradleException(
+                    "android/key.properties is missing or incomplete. " +
+                        "Release APKs must be signed with a stable release keystore."
+                )
+            }
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
@@ -148,6 +159,9 @@ val copyReleaseApksForFlutter by tasks.registering(Copy::class) {
 
     into(flutterApkDir)
 
+    from(layout.buildDirectory.dir("outputs/apk/release")) {
+        include("app-release.apk")
+    }
     from(layout.buildDirectory.dir("outputs/apk/release")) {
         include("*arm64-v8a*.apk")
         rename { "entropyvpn-${flutter.versionName}-arm64-v8a.apk" }

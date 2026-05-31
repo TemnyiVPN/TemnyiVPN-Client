@@ -930,7 +930,9 @@ class _MobileSubscriptionHeader extends StatelessWidget {
     final title = sourceSubscriptionTitle(source);
     final titleStyle = subscriptionHeaderTitleStyle(theme);
     final hasAbout = sourceHasAboutInfo(source);
-    final actionWidth = mobileSubscriptionHeaderActionsWidth(hasAbout: hasAbout);
+    final actionWidth = mobileSubscriptionHeaderActionsWidth(
+      hasAbout: hasAbout,
+    );
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(
@@ -1060,11 +1062,13 @@ class _MobileSubscriptionProfileCard extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(22),
-        onTap: controller.canEditSources
-            ? () {
-                controller.selectSource(source.id);
-                controller.setSelectedProfileIndex(profileIndex);
-              }
+        onTap: controller.canSwitchConnectionProfile
+            ? () => unawaited(
+                controller.selectConnectionProfile(
+                  source.id,
+                  profileIndex: profileIndex,
+                ),
+              )
             : null,
         child: Ink(
           key: cardKey,
@@ -1647,8 +1651,7 @@ class _SignalBarsPainter extends CustomPainter {
       ..style = PaintingStyle.fill
       ..isAntiAlias = true;
     for (var i = 0; i < _bars; i += 1) {
-      final t = _minHeightRatio +
-          (1.0 - _minHeightRatio) * (i / (_bars - 1));
+      final t = _minHeightRatio + (1.0 - _minHeightRatio) * (i / (_bars - 1));
       final h = usableHeight * t;
       final x = insetX + i * (barWidth + gap);
       final y = insetY + (usableHeight - h);
@@ -1905,8 +1908,9 @@ class _QuickSourceTile extends StatelessWidget {
             color: Colors.transparent,
             child: InkWell(
               borderRadius: BorderRadius.circular(22),
-              onTap: controller.canEditSources
-                  ? () => controller.selectSource(source.id)
+              onTap: controller.canSwitchConnectionProfile
+                  ? () =>
+                        unawaited(controller.selectConnectionProfile(source.id))
                   : null,
               child: Ink(
                 key: cardKey,
@@ -1947,7 +1951,7 @@ class _ProfileDropdown extends StatelessWidget {
             '${source.id}:${source.selectedProfileIndex}:${source.profiles.length}',
           ),
           width: constraints.maxWidth,
-          enabled: controller.canEditSources,
+          enabled: controller.canSwitchConnectionProfile,
           initialSelection: source.selectedProfileIndex,
           label: Text(strings.profileSelectorLabel),
           helperText: strings.profileSelectorHelper(source.profiles.length),
@@ -1960,7 +1964,12 @@ class _ProfileDropdown extends StatelessWidget {
           ],
           onSelected: (value) {
             if (value != null) {
-              controller.setSelectedProfileIndex(value);
+              unawaited(
+                controller.selectConnectionProfile(
+                  source.id,
+                  profileIndex: value,
+                ),
+              );
             }
           },
         );
@@ -2087,11 +2096,7 @@ class _AboutSubscriptionButton extends StatelessWidget {
     final scheme = Theme.of(context).colorScheme;
     return IconButton(
       onPressed: () => unawaited(
-        _showAboutSubscriptionDialog(
-          context,
-          strings: strings,
-          source: source,
-        ),
+        _showAboutSubscriptionDialog(context, strings: strings, source: source),
       ),
       tooltip: strings.aboutSubscriptionAction,
       icon: const Icon(Icons.info_outline_rounded),
@@ -2213,7 +2218,9 @@ class _ProfileInfoDialogState extends State<_ProfileInfoDialog> {
     final entries = <MapEntry<String, String>>[];
 
     if (core != null) {
-      entries.add(MapEntry(strings.profileInfoCoreLabel, strings.coreName(core)));
+      entries.add(
+        MapEntry(strings.profileInfoCoreLabel, strings.coreName(core)),
+      );
     }
 
     final protocolLabel = _profileProtocolDisplay(strings, profile);
@@ -2305,9 +2312,7 @@ class _AboutSubscriptionDialog extends StatelessWidget {
     final entries = <MapEntry<String, String>>[];
     final expiresLabel = sourceTrafficExpiryDateLabel(source);
     if (expiresLabel != null) {
-      entries.add(
-        MapEntry(strings.subscriptionExpiresLabel, expiresLabel),
-      );
+      entries.add(MapEntry(strings.subscriptionExpiresLabel, expiresLabel));
     }
 
     final labelStyle = theme.textTheme.bodyMedium?.copyWith(

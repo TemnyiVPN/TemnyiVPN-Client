@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:flutter/material.dart';
 
 import 'l10n/app_strings.dart';
@@ -15,6 +14,7 @@ Future<void> showAppUpdateNotificationDialog(
   required AppStrings strings,
   required AppUpdateInfo update,
 }) {
+  controller.markAppUpdateNotificationShown(update);
   return showDialog<void>(
     context: context,
     builder: (context) => _AppUpdateNotificationDialog(
@@ -126,7 +126,7 @@ class _AppUpdateNotificationDialogState
                   color: scheme.onPrimary,
                 ),
               )
-            : const FaIcon(FontAwesomeIcons.github, size: 18),
+            : const Icon(Icons.open_in_new_rounded, size: 18),
         label: Text(widget.strings.appUpdateOpenReleaseAction),
       ),
     );
@@ -178,7 +178,7 @@ class _AppUpdateNotificationDialogState
                         color: scheme.primary,
                       ),
                     )
-                  : const FaIcon(FontAwesomeIcons.github, size: 16),
+                  : const Icon(Icons.open_in_new_rounded, size: 16),
               label: Text(strings.appUpdateOpenReleaseAction),
             ),
           ],
@@ -202,8 +202,10 @@ class _AppUpdateNotificationDialogState
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
-            Text(strings.appUpdateReadyMessage,
-                style: theme.textTheme.bodyMedium),
+            Text(
+              strings.appUpdateReadyMessage,
+              style: theme.textTheme.bodyMedium,
+            ),
             const SizedBox(height: 14),
             Center(
               child: FilledButton.icon(
@@ -223,14 +225,18 @@ class _AppUpdateNotificationDialogState
             ),
             const SizedBox(width: 10),
             Expanded(
-              child: Text(strings.appUpdateInstallingMessage,
-                  style: theme.textTheme.bodyMedium),
+              child: Text(
+                strings.appUpdateInstallingMessage,
+                style: theme.textTheme.bodyMedium,
+              ),
             ),
           ],
         );
       case _Phase.upToDate:
-        return Text(strings.appUpdateUpToDateMessage,
-            style: theme.textTheme.bodyMedium);
+        return Text(
+          strings.appUpdateUpToDateMessage,
+          style: theme.textTheme.bodyMedium,
+        );
       case _Phase.failed:
         return Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,

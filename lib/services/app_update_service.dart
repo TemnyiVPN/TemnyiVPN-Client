@@ -6,9 +6,12 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'package:url_launcher/url_launcher.dart';
 
 const Duration appUpdateCheckInterval = Duration(hours: 1);
-const String appUpdateReleasesPageUrl = 'about:blank';
+const String appUpdateReleasesPageUrl =
+    'https://github.com/TemnyiVPN/TemnyiVPN-Client/releases';
 
-final Uri appUpdateLatestReleaseApiUri = Uri.parse('about:blank');
+final Uri appUpdateLatestReleaseApiUri = Uri.parse(
+  'https://api.github.com/repos/TemnyiVPN/TemnyiVPN-Client/releases/latest',
+);
 
 class AppUpdateInfo {
   const AppUpdateInfo({
@@ -190,9 +193,6 @@ class AppUpdateService {
   final Duration _requestTimeout;
 
   Future<AppUpdateInfo?> checkForUpdate({String? currentVersion}) async {
-    // App auto-update is intentionally disabled for this build.
-    return null;
-
     final effectiveCurrentVersion =
         currentVersion ?? await loadCurrentVersion();
     final current = effectiveCurrentVersion == null
@@ -223,7 +223,7 @@ class AppUpdateService {
       );
       request.headers.set(
         HttpHeaders.userAgentHeader,
-        'EntropyVPN update checker',
+        'TemnyiVPN update checker',
       );
       final response = await request.close().timeout(_requestTimeout);
       final body = await response

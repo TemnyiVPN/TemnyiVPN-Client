@@ -208,6 +208,7 @@ class AppStrings {
   String get jsonImportFailedMessage =>
       'Could not import the selected JSON file.';
   String get scanQrAction => _ru ? 'Сканировать QR' : 'Scan QR';
+  String get buyVpnAction => _ru ? 'Купить VPN' : 'Buy VPN';
   String get qrGalleryAction => _ru ? 'Галерея' : 'Gallery';
   String get qrCameraAction => _ru ? 'Камера' : 'Camera';
   String get qrPasteImageAction =>

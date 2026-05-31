@@ -120,10 +120,7 @@ class MainActivity : FlutterActivity() {
             "getAppDataDirectory" -> result.success(filesDir.absolutePath)
             "getCoreVersions" -> getCoreVersions(result)
             "listInstalledApps" -> listInstalledApps(result)
-            "showUpdateNotification" -> {
-                // App update notifications are intentionally disabled for this build.
-                result.success(false)
-            }
+            "showUpdateNotification" -> showUpdateNotification(call, result)
             else -> result.notImplemented()
         }
     }

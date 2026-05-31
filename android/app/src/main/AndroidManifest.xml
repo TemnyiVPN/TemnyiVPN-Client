@@ -2,7 +2,6 @@
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission
@@ -14,7 +13,17 @@
         android:label="TemnyiVPN"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:usesCleartextTraffic="true">
+        android:appCategory="productivity"
+        android:usesCleartextTraffic="false">
+        <meta-data
+            android:name="com.temnyivpn.website"
+            android:value="https://temnyivpn.store" />
+        <meta-data
+            android:name="com.temnyivpn.source"
+            android:value="https://github.com/TemnyiVPN/TemnyiVPN-Client" />
+        <meta-data
+            android:name="com.temnyivpn.releases"
+            android:value="https://github.com/TemnyiVPN/TemnyiVPN-Client/releases" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

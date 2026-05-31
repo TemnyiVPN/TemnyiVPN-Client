@@ -64,12 +64,11 @@ class VpnController extends ChangeNotifier {
     );
     _hydration = _restoreState();
     unawaited(_syncAndroidRuntimeAfterRestore());
-    // App auto-update checks are intentionally disabled for this build.
-    // _appUpdateTimer = Timer.periodic(
-    //   appUpdateCheckInterval,
-    //   (_) => unawaited(checkForAppUpdate()),
-    // );
-    // unawaited(checkForAppUpdate());
+    _appUpdateTimer = Timer.periodic(
+      appUpdateCheckInterval,
+      (_) => unawaited(checkForAppUpdate()),
+    );
+    unawaited(checkForAppUpdate());
     _listenForAndroidIncomingLinks();
   }
 
@@ -92,9 +91,7 @@ class VpnController extends ChangeNotifier {
   late final Future<void> _hydration;
   late AppLanguage _language;
   late final ValueNotifier<AppLanguage> _languageNotifier;
-  TrafficMode _trafficMode = Platform.isAndroid
-      ? TrafficMode.tun
-      : TrafficMode.systemProxy;
+  TrafficMode _trafficMode = TrafficMode.tun;
   TunIpMode _tunIpMode = TunIpMode.ipv4;
   DnsSettings _dnsSettings = const DnsSettings();
   SplitTunnelSettings _splitTunnelSettings = const SplitTunnelSettings();
@@ -176,7 +173,16 @@ class VpnController extends ChangeNotifier {
   List<String> get runtimeLogs => _runtimeService.recentLogs;
   String get runtimeLogsText => runtimeLogs.join('\n');
   AppUpdateInfo? get availableAppUpdate => _availableAppUpdate;
-  AppUpdateInfo? get pendingAppUpdateNotification => null;
+  AppUpdateInfo? get pendingAppUpdateNotification {
+    final update = _availableAppUpdate;
+    if (update == null || !_showInAppUpdateNotifications) {
+      return null;
+    }
+    if (_lastShownAppUpdateTag == update.tagName) {
+      return null;
+    }
+    return update;
+  }
 
   bool get showInAppUpdateNotifications => _showInAppUpdateNotifications;
   bool get showAndroidUpdateNotifications => _showAndroidUpdateNotifications;
@@ -194,6 +200,7 @@ class VpnController extends ChangeNotifier {
   bool get canBrowseSources => !isBusy && !_isAddingSource;
   bool get canAddSource => !isBusy && !_isAddingSource;
   bool get canEditSources => !isBusy && !isConnected && !_isAddingSource;
+  bool get canSwitchConnectionProfile => !isBusy && !_isAddingSource;
   bool get canRemoveSources => !isBusy && !_isAddingSource;
   bool get supportsTrafficModeSelection => !Platform.isAndroid;
   bool get canChangeTrafficMode =>
@@ -818,9 +825,82 @@ class VpnController extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> selectConnectionProfile(
+    String sourceId, {
+    int? profileIndex,
+    bool moveVisiblePage = true,
+    ProfileSelectionMode profileSelectionMode = ProfileSelectionMode.manual,
+  }) async {
+    await _hydration;
+
+    if (isBusy || _isAddingSource) {
+      return;
+    }
+
+    var source = _sourceById(sourceId);
+    if (source == null) {
+      return;
+    }
+
+    final nextProfileIndex = profileIndex ?? source.selectedProfileIndex;
+    if (nextProfileIndex < 0 || nextProfileIndex >= source.profiles.length) {
+      return;
+    }
+
+    final nextMode = source.isSubscription
+        ? profileSelectionMode
+        : ProfileSelectionMode.manual;
+    final selectionChanged =
+        _selectedSourceId != sourceId ||
+        source.selectedProfileIndex != nextProfileIndex ||
+        source.profileSelectionMode != nextMode;
+    if (!selectionChanged) {
+      return;
+    }
+
+    final restartConnection = isConnected;
+    if (restartConnection) {
+      await disconnect(waitForCleanup: true);
+      if (isBusy || _isAddingSource) {
+        return;
+      }
+      source = _sourceById(sourceId);
+      if (source == null ||
+          nextProfileIndex < 0 ||
+          nextProfileIndex >= source.profiles.length) {
+        return;
+      }
+    }
+
+    _setSelectedSourceId(sourceId, moveVisiblePage: moveVisiblePage);
+    if (source.selectedProfileIndex != nextProfileIndex ||
+        source.profileSelectionMode != nextMode) {
+      _replaceSource(
+        source.copyWith(
+          selectedProfileIndex: nextProfileIndex,
+          profileSelectionMode: nextMode,
+        ),
+      );
+    }
+    _coerceDnsModeForActiveCore();
+    _setRuntimeError(null);
+    _queuePersistState();
+    notifyListeners();
+
+    if (restartConnection) {
+      await connect();
+    }
+  }
+
   void setFastestProfileSelection(String sourceId) {
+    unawaited(_setFastestProfileSelection(sourceId));
+  }
+
+  Future<void> _setFastestProfileSelection(String sourceId) async {
+    await _hydration;
+
     final source = _sourceById(sourceId);
-    if (source == null || !source.isSubscription || isConnected || isBusy) {
+    if (source == null || !source.isSubscription || isBusy || _isAddingSource) {
       return;
     }
 
@@ -828,17 +908,13 @@ class VpnController extends ChangeNotifier {
       source.profiles,
       source.tcpPingProfileLatencies,
     );
-    _replaceSource(
-      source.copyWith(
-        profileSelectionMode: ProfileSelectionMode.fastest,
-        selectedProfileIndex: bestIndex ?? source.selectedProfileIndex,
-      ),
+    await selectConnectionProfile(
+      sourceId,
+      profileIndex: bestIndex ?? source.selectedProfileIndex,
+      profileSelectionMode: ProfileSelectionMode.fastest,
     );
-    _coerceDnsModeForActiveCore();
-    _queuePersistState();
-    notifyListeners();
 
-    if (!source.isPinging) {
+    if (!isConnected && !source.isPinging) {
       unawaited(_pingSource(sourceId, selectFastest: true));
     }
   }
@@ -1162,13 +1238,6 @@ class VpnController extends ChangeNotifier {
 
   Future<void> checkForAppUpdate({bool force = false}) async {
     await _hydration;
-    // App auto-update is intentionally disabled for this build.
-    if (_availableAppUpdate != null) {
-      _availableAppUpdate = null;
-      notifyListeners();
-    }
-    return;
-
     if (_isCheckingAppUpdate) {
       return;
     }
@@ -1258,28 +1327,34 @@ class VpnController extends ChangeNotifier {
   /// Windows in-app updater: asks the privileged service to check for and
   /// download an update. Returns false if the service is unreachable.
   Future<bool> startWindowsUpdateDownload() {
-    return Future<bool>.value(false);
+    if (!Platform.isWindows) {
+      return Future<bool>.value(false);
+    }
+    return _runtimeService.windowsUpdateCheckNow(force: true);
   }
 
   /// Windows in-app updater: current download/apply progress.
   Future<WindowsUpdateStatus> windowsUpdateStatus() {
-    return Future<WindowsUpdateStatus>.value(
-      const WindowsUpdateStatus(state: WindowsUpdateState.idle),
-    );
+    if (!Platform.isWindows) {
+      return Future<WindowsUpdateStatus>.value(
+        const WindowsUpdateStatus(state: WindowsUpdateState.idle),
+      );
+    }
+    return _runtimeService.windowsUpdateStatus();
   }
 
   /// Windows in-app updater: applies the staged update. The service closes the
   /// UI to swap files, so the caller exits the app right after this returns.
   Future<void> applyWindowsUpdate() {
-    return Future<void>.value();
+    if (!Platform.isWindows) {
+      return Future<void>.value();
+    }
+    return _runtimeService.windowsUpdateApply();
   }
 
   Future<void> _showAndroidAppUpdateNotificationIfNeeded([
     AppUpdateInfo? update,
   ]) async {
-    // Android update notifications are intentionally disabled for this build.
-    return;
-
     if (!Platform.isAndroid || !_showAndroidUpdateNotifications) {
       return;
     }
@@ -1466,9 +1541,7 @@ class VpnController extends ChangeNotifier {
     _appUpdateLastCheckedAt = null;
     _lastShownAppUpdateTag = null;
     _lastShownAndroidAppUpdateTag = null;
-    _trafficMode = Platform.isAndroid
-        ? TrafficMode.tun
-        : TrafficMode.systemProxy;
+    _trafficMode = TrafficMode.tun;
     _tunIpMode = TunIpMode.ipv4;
     _dnsSettings = const DnsSettings();
     _splitTunnelSettings = const SplitTunnelSettings();

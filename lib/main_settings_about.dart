@@ -88,21 +88,30 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
         children: <Widget>[
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: <Widget>[
-                Icon(Icons.shield_rounded, size: 18, color: scheme.primary),
-                const SizedBox(width: 10),
-                Flexible(
-                  child: Text(
-                    _aboutGithubDisplayText,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: scheme.primary,
-                      fontWeight: FontWeight.w600,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: _openReleasesPage,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    Icon(Icons.shield_rounded, size: 18, color: scheme.primary),
+                    const SizedBox(width: 10),
+                    Flexible(
+                      child: Text(
+                        _aboutGithubDisplayText,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: scheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
           const SizedBox(height: 4),
@@ -123,6 +132,13 @@ class _AboutAppDialogState extends State<_AboutAppDialog> {
           ),
         ],
       ),
+    );
+  }
+
+  Future<void> _openReleasesPage() async {
+    await launchUrl(
+      Uri.parse(appUpdateReleasesPageUrl),
+      mode: LaunchMode.externalApplication,
     );
   }
 }

@@ -7,6 +7,7 @@ import 'l10n/app_strings.dart';
 import 'main_connect.dart';
 import 'main_constants.dart';
 import 'main_pages.dart';
+import 'main_update_notification.dart';
 import 'services/vpn_controller.dart';
 import 'services/windows_interference_service.dart';
 
@@ -43,6 +44,8 @@ class _VpnHomePageState extends State<VpnHomePage> {
   late final bool _startedWithoutSources;
   bool _didAutoSwitchAfterRestore = false;
   bool _windowsInterferenceDialogOpen = false;
+  bool _appUpdateDialogOpen = false;
+  bool _connectFlowInProgress = false;
 
   @override
   void initState() {
@@ -57,12 +60,9 @@ class _VpnHomePageState extends State<VpnHomePage> {
     _section = widget.controller.hasSources
         ? _HomeSection.connect
         : _HomeSection.add;
-    if (Platform.isWindows) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _scanWindowsInterferenceAtStartup(),
-      );
-    }
-    // App update reminder dialogs are intentionally disabled for this build.
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _showPendingAppUpdateNotification(),
+    );
   }
 
   @override
@@ -109,6 +109,34 @@ class _VpnHomePageState extends State<VpnHomePage> {
       });
       return;
     }
+    _showPendingAppUpdateNotification();
+  }
+
+  void _showPendingAppUpdateNotification() {
+    if (!mounted || _appUpdateDialogOpen) {
+      return;
+    }
+    final update = widget.controller.pendingAppUpdateNotification;
+    if (update == null) {
+      return;
+    }
+    _appUpdateDialogOpen = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) {
+        _appUpdateDialogOpen = false;
+        return;
+      }
+      await showAppUpdateNotificationDialog(
+        context,
+        controller: widget.controller,
+        strings: AppStrings.of(context),
+        update: update,
+      );
+      _appUpdateDialogOpen = false;
+      if (mounted) {
+        _showPendingAppUpdateNotification();
+      }
+    });
   }
 
   void _setSection(_HomeSection section) {
@@ -144,25 +172,48 @@ class _VpnHomePageState extends State<VpnHomePage> {
     });
   }
 
-  Future<void> _scanWindowsInterferenceAtStartup() async {
-    if (!mounted || _windowsInterferenceDialogOpen) {
+  Future<void> _handlePowerButtonPressed() async {
+    if (_connectFlowInProgress || widget.controller.isBusy) {
       return;
     }
+
+    if (widget.controller.isConnected) {
+      await widget.controller.toggleConnection();
+      return;
+    }
+
+    _connectFlowInProgress = true;
     try {
-      await widget.controller.hydration;
-      final processes = await widget.controller.scanWindowsInterference();
-      if (!mounted || processes.isEmpty || _windowsInterferenceDialogOpen) {
+      if (Platform.isWindows) {
+        try {
+          await widget.controller.hydration;
+          final processes = await widget.controller.scanWindowsInterference();
+          if (mounted && processes.isNotEmpty) {
+            await _showWindowsInterferenceDialog(processes);
+          }
+        } catch (_) {
+          // Interference detection is best-effort; connection should still work
+          // if process enumeration or the service check fails.
+        }
+      }
+
+      if (!mounted ||
+          widget.controller.isBusy ||
+          widget.controller.isConnected) {
         return;
       }
-      await _showWindowsInterferenceDialog(processes);
-    } catch (_) {
-      // The panel is a startup aid; failures should not block the app.
+      await widget.controller.connect();
+    } finally {
+      _connectFlowInProgress = false;
     }
   }
 
   Future<void> _showWindowsInterferenceDialog(
     List<WindowsInterferenceProcess> initialProcesses,
   ) async {
+    if (_windowsInterferenceDialogOpen) {
+      return;
+    }
     _windowsInterferenceDialogOpen = true;
     try {
       await showDialog<void>(
@@ -378,6 +429,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
                       strings: strings,
                       onChanged: _setSection,
                       textController: _textController,
+                      onToggleConnection: _handlePowerButtonPressed,
                     ),
                   );
                 }
@@ -389,6 +441,7 @@ class _VpnHomePageState extends State<VpnHomePage> {
                     controller: controller,
                     strings: strings,
                     textController: _textController,
+                    onToggleConnection: _handlePowerButtonPressed,
                   ),
                 );
 
@@ -486,6 +539,7 @@ class _MobileShell extends StatefulWidget {
     required this.strings,
     required this.onChanged,
     required this.textController,
+    required this.onToggleConnection,
   });
 
   final _HomeSection selected;
@@ -493,6 +547,7 @@ class _MobileShell extends StatefulWidget {
   final AppStrings strings;
   final ValueChanged<_HomeSection> onChanged;
   final TextEditingController textController;
+  final Future<void> Function() onToggleConnection;
 
   @override
   State<_MobileShell> createState() => _MobileShellState();
@@ -711,6 +766,7 @@ class _MobileShellState extends State<_MobileShell> {
                     ConnectPageBody(
                       controller: widget.controller,
                       strings: widget.strings,
+                      onToggleConnection: widget.onToggleConnection,
                       onSwipePastLastSource: _handleConnectSourcePagerOverflow,
                       onSwipePastLastSourceDragUpdate:
                           _handleConnectSourcePagerOverflowDragUpdate,
@@ -769,12 +825,14 @@ class _SectionContentSwitcher extends StatelessWidget {
     required this.controller,
     required this.strings,
     required this.textController,
+    required this.onToggleConnection,
   });
 
   final _HomeSection section;
   final VpnController controller;
   final AppStrings strings;
   final TextEditingController textController;
+  final Future<void> Function() onToggleConnection;
 
   @override
   Widget build(BuildContext context) {
@@ -808,6 +866,7 @@ class _SectionContentSwitcher extends StatelessWidget {
           key: const ValueKey<String>('connect'),
           controller: controller,
           strings: strings,
+          onToggleConnection: onToggleConnection,
         ),
         _HomeSection.add => AddSourcePageBody(
           key: const ValueKey<String>('add'),

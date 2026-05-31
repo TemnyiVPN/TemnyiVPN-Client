@@ -28,7 +28,6 @@ migrate_working_dir/
 /build/
 /coverage/
 windows/flutter/ephemeral/
-/entropy_vpn_native.dll
 
 app.*.symbols
 app.*.map.json

@@ -19,8 +19,8 @@
 namespace entropy_vpn_service {
 namespace {
 
-constexpr wchar_t kGithubLatestReleaseUrl[] =
-    L"about:blank";
+constexpr wchar_t kGithubReleasesUrl[] =
+    L"https://api.github.com/repos/TemnyiVPN/TemnyiVPN-Client/releases?per_page=20";
 constexpr char kGithubAcceptHeader[] = "application/vnd.github+json";
 constexpr int64_t kRateLimitSeconds = 3600;
 constexpr size_t kMaxApiBytes = 4 * 1024 * 1024;
@@ -57,6 +57,12 @@ int64_t g_last_check_unix = 0;
 bool g_worker_active = false;
 std::thread g_worker;
 ReleaseManifest g_staged_manifest;
+
+struct UpdateReleaseAssets {
+  std::wstring manifest_url;
+  std::wstring pack_url;
+  std::string tag_name;
+};
 
 // --- small helpers ---------------------------------------------------------
 
@@ -123,6 +129,61 @@ bool ReadFileToString(const std::wstring& path, std::string* out) {
   return ok;
 }
 
+bool FindUpdateAssetsInRelease(const JsonValue& release,
+                               UpdateReleaseAssets* out) {
+  if (!release.is_object()) {
+    return false;
+  }
+
+  const JsonValue* assets = release.Find("assets");
+  if (assets == nullptr || !assets->is_array()) {
+    return false;
+  }
+
+  UpdateReleaseAssets candidate;
+  const JsonValue* tag = release.Find("tag_name");
+  if (tag != nullptr && tag->is_string()) {
+    candidate.tag_name = tag->string_value;
+  }
+
+  for (const JsonValue& asset : assets->array_items) {
+    if (!asset.is_object()) {
+      continue;
+    }
+    const JsonValue* name = asset.Find("name");
+    const JsonValue* url = asset.Find("browser_download_url");
+    if (name == nullptr || !name->is_string() || url == nullptr ||
+        !url->is_string()) {
+      continue;
+    }
+    if (name->string_value == "manifest.json") {
+      candidate.manifest_url = WideFromUtf8(url->string_value);
+    } else if (name->string_value == "blobs.pack") {
+      candidate.pack_url = WideFromUtf8(url->string_value);
+    }
+  }
+
+  if (candidate.manifest_url.empty() || candidate.pack_url.empty()) {
+    return false;
+  }
+  *out = candidate;
+  return true;
+}
+
+bool FindNewestReleaseWithUpdateAssets(const JsonValue& releases,
+                                       UpdateReleaseAssets* out) {
+  if (releases.is_array()) {
+    for (const JsonValue& release : releases.array_items) {
+      if (FindUpdateAssetsInRelease(release, out)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  return FindUpdateAssetsInRelease(releases, out);
+}
+
 // The version EntropyVPN currently believes is installed. installed_manifest
 // is written by a completed update; manifest.json is shipped by the installer.
 std::string ReadInstalledVersion() {
@@ -176,58 +237,38 @@ void FinishReady(const ReleaseManifest& manifest) {
 void RunCheckWorker() {
   LogLine("update.check.start");
 
-  HttpResult api = HttpGetString(kGithubLatestReleaseUrl, kMaxApiBytes,
+  HttpResult api = HttpGetString(kGithubReleasesUrl, kMaxApiBytes,
                                  kGithubAcceptHeader);
   if (!api.ok) {
     FinishWithError("Could not reach the update server: " + api.error);
     return;
   }
 
-  JsonValue release;
+  JsonValue releases;
   std::string json_error;
-  if (!ParseJson(api.body, &release, &json_error) || !release.is_object()) {
+  if (!ParseJson(api.body, &releases, &json_error) ||
+      (!releases.is_array() && !releases.is_object())) {
     FinishWithError("Update server returned an unreadable response.");
     return;
   }
 
-  const JsonValue* assets = release.Find("assets");
-  if (assets == nullptr || !assets->is_array()) {
-    const JsonValue* message = release.Find("message");
-    FinishWithError(message != nullptr && message->is_string()
-                        ? "Update server: " + message->string_value
-                        : "Update server returned no release assets.");
-    return;
+  if (releases.is_object()) {
+    const JsonValue* message = releases.Find("message");
+    if (message != nullptr && message->is_string()) {
+      FinishWithError("Update server: " + message->string_value);
+      return;
+    }
   }
 
-  std::wstring manifest_url;
-  std::wstring pack_url;
-  for (const JsonValue& asset : assets->array_items) {
-    if (!asset.is_object()) {
-      continue;
-    }
-    const JsonValue* name = asset.Find("name");
-    const JsonValue* url = asset.Find("browser_download_url");
-    if (name == nullptr || !name->is_string() || url == nullptr ||
-        !url->is_string()) {
-      continue;
-    }
-    if (name->string_value == "manifest.json") {
-      manifest_url = WideFromUtf8(url->string_value);
-    } else if (name->string_value == "blobs.pack") {
-      pack_url = WideFromUtf8(url->string_value);
-    }
-  }
-  if (manifest_url.empty()) {
-    FinishWithError("The latest release has no update manifest.");
-    return;
-  }
-  if (pack_url.empty()) {
-    FinishWithError("The latest release is missing blobs.pack.");
+  UpdateReleaseAssets update_assets;
+  if (!FindNewestReleaseWithUpdateAssets(releases, &update_assets)) {
+    FinishWithError("No published release has update manifest assets.");
     return;
   }
 
   HttpResult manifest_response =
-      HttpGetString(manifest_url, kMaxManifestBytes, std::string());
+      HttpGetString(update_assets.manifest_url, kMaxManifestBytes,
+                    std::string());
   if (!manifest_response.ok) {
     FinishWithError("Could not download the update manifest: " +
                     manifest_response.error);
@@ -307,7 +348,7 @@ void RunCheckWorker() {
 
     const uint64_t base = completed_bytes;
     HttpResult download = HttpDownloadRangeToFile(
-        pack_url, staged_path, file.pack_offset, file.size,
+        update_assets.pack_url, staged_path, file.pack_offset, file.size,
         [base](uint64_t received, uint64_t /*range_length*/) {
           std::lock_guard<std::mutex> lock(g_update_mutex);
           g_progress_bytes = base + received;
@@ -381,9 +422,6 @@ void JoinFinishedWorkerLocked() {
 }  // namespace
 
 std::string UpdateCheckNow(const std::map<std::string, std::string>& fields) {
-  (void)fields;
-  return BuildResponse({{"ok", "1"}, {"started", "0"}});
-/*
   const bool force = ReadDword(fields, "force", 0) != 0;
   const int64_t now = static_cast<int64_t>(std::time(nullptr));
 
@@ -406,14 +444,9 @@ std::string UpdateCheckNow(const std::map<std::string, std::string>& fields) {
   g_worker_active = true;
   g_worker = std::thread(RunCheckWorker);
   return BuildResponse({{"ok", "1"}, {"started", "1"}});
-*/
 }
 
 std::string UpdateApply(const std::map<std::string, std::string>& fields) {
-  (void)fields;
-  return ErrorResponse("App auto-update is disabled for this build.",
-                       ERROR_INVALID_STATE);
-/*
   std::lock_guard<std::mutex> lock(g_update_mutex);
   if (g_worker_active) {
     return ErrorResponse("An update operation is already in progress.",
@@ -429,7 +462,6 @@ std::string UpdateApply(const std::map<std::string, std::string>& fields) {
   g_worker_active = true;
   g_worker = std::thread(RunApplyWorker);
   return BuildResponse({{"ok", "1"}, {"started", "1"}});
-*/
 }
 
 std::string UpdateStatus(const std::map<std::string, std::string>& fields) {

@@ -1,8 +1,10 @@
 # TemnyiVPN release tooling
 
-Scripts that build the Windows installer and the in-app update payload.
+Scripts that build release packages and update payloads.
 
 ## Build pipeline
+
+### Windows setup
 
 ```powershell
 # Build app + installer + update manifest (does NOT publish):
@@ -22,6 +24,33 @@ powershell -ExecutionPolicy Bypass -File tools\build_installer.ps1 -PublishRelea
 3. Inno Setup compiles `TemnyiVPN-Setup-<version>.exe`
 4. with `-PublishRelease`: `gh release create` uploads three assets:
    the installer, `manifest.json`, and `blobs.pack`
+
+### Linux package
+
+Run on Linux with Flutter desktop support installed:
+
+```bash
+# Build the Linux app, a tarball, and an installable .deb package:
+bash tools/build_linux_installer.sh
+
+# Repackage an already-built Linux bundle:
+bash tools/build_linux_installer.sh --skip-flutter-build
+```
+
+Outputs:
+
+- `build/linux/dist/entropy_vpn-<version>-linux-x64.tar.gz`
+- `build/linux/dist/temnyivpn_<version>_<arch>.deb`
+
+Install the `.deb` on Debian/Ubuntu:
+
+```bash
+sudo apt install ./build/linux/dist/temnyivpn_<version>_<arch>.deb
+```
+
+The package installs the app to `/opt/entropy_vpn`, adds
+`/usr/bin/entropy_vpn`, installs the desktop launcher, and bundles the Linux
+core binaries from `tools/cores/linux` when present.
 
 ## How the in-app updater works
 
@@ -55,5 +84,7 @@ auto-update across the schema bump; they need a one-time manual reinstall.
 | File | Purpose |
 |---|---|
 | `build_installer.ps1` | Top-level build + (optional) publish |
+| `build_linux_installer.sh` | Builds Linux tarball + installable `.deb` |
+| `build_linux_release.sh` | Builds Linux tarball only |
 | `build_release_manifest.ps1` | Generates `manifest.json` + `blobs.pack` |
 | `release_exclude_globs.txt` | File-exclude list shared with the installer |

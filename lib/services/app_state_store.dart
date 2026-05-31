@@ -320,10 +320,10 @@ AppLanguage _appLanguageByName(String? name) {
 }
 
 TrafficMode _trafficModeByName(String? name) {
-  if (name == TrafficMode.tun.name) {
-    return TrafficMode.tun;
+  if (name == TrafficMode.systemProxy.name) {
+    return TrafficMode.systemProxy;
   }
-  return TrafficMode.systemProxy;
+  return TrafficMode.tun;
 }
 
 TunIpMode _tunIpModeByName(

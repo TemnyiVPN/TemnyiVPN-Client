@@ -95,7 +95,7 @@ class WindowsTrayMenuService {
     final sources = _controller.sources;
     final selectedSource = _controller.selectedSource;
     final selectedSourceId = selectedSource?.id;
-    final canSwitch = _controller.canEditSources;
+    final canSwitch = _controller.canSwitchConnectionProfile;
     final items = <Map<String, Object?>>[
       <String, Object?>{
         'token': 'action:toggleConnection',
@@ -162,7 +162,7 @@ class WindowsTrayMenuService {
         'label': _profileLabel(profile, max: 40),
         'flagPath': _flagPathForProfile(profile),
         'selected': selected && index == source.selectedProfileIndex,
-        'enabled': _controller.canEditSources,
+        'enabled': _controller.canSwitchConnectionProfile,
         'indent': 0,
       });
     }
@@ -267,8 +267,9 @@ class WindowsTrayMenuService {
       return output.path;
     }
 
-    final assetData =
-        await rootBundle.load('$_flagAssetDirectory/$lowerCode.png');
+    final assetData = await rootBundle.load(
+      '$_flagAssetDirectory/$lowerCode.png',
+    );
     final assetBytes = assetData.buffer.asUint8List(
       assetData.offsetInBytes,
       assetData.lengthInBytes,
@@ -342,7 +343,9 @@ class WindowsTrayMenuService {
 
     if (token.startsWith('source:')) {
       final sourceId = Uri.decodeComponent(token.substring('source:'.length));
-      _controller.selectSource(sourceId, moveVisiblePage: false);
+      unawaited(
+        _controller.selectConnectionProfile(sourceId, moveVisiblePage: false),
+      );
       return;
     }
 
@@ -362,7 +365,12 @@ class WindowsTrayMenuService {
       return;
     }
 
-    _controller.selectSource(sourceId, moveVisiblePage: false);
-    _controller.setSelectedProfileIndex(profileIndex);
+    unawaited(
+      _controller.selectConnectionProfile(
+        sourceId,
+        profileIndex: profileIndex,
+        moveVisiblePage: false,
+      ),
+    );
   }
 }

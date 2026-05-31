@@ -506,7 +506,7 @@ class InputPanelState extends State<InputPanel> {
           child: FilledButton.icon(
             onPressed: () => unawaited(_openBuyVpn()),
             icon: const Icon(Icons.shopping_bag_rounded),
-            label: const Text('Купить VPN'),
+            label: Text(strings.buyVpnAction),
             style: FilledButton.styleFrom(
               minimumSize: const Size(0, 46),
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

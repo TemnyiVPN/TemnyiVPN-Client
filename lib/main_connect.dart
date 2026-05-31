@@ -19,6 +19,7 @@ class ConnectPageBody extends StatefulWidget {
     super.key,
     required this.controller,
     required this.strings,
+    this.onToggleConnection,
     this.onSwipePastLastSource,
     this.onSwipePastLastSourceDragUpdate,
     this.onSwipePastLastSourceDragEnd,
@@ -27,6 +28,7 @@ class ConnectPageBody extends StatefulWidget {
 
   final VpnController controller;
   final AppStrings strings;
+  final Future<void> Function()? onToggleConnection;
   final VoidCallback? onSwipePastLastSource;
   final ValueChanged<double>? onSwipePastLastSourceDragUpdate;
   final ValueChanged<double>? onSwipePastLastSourceDragEnd;
@@ -53,6 +55,7 @@ class ConnectPageBodyState extends State<ConnectPageBody> {
             child: _SplitConnectLayout(
               controller: widget.controller,
               strings: widget.strings,
+              onToggleConnection: widget.onToggleConnection,
             ),
           );
         }
@@ -61,7 +64,10 @@ class ConnectPageBodyState extends State<ConnectPageBody> {
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 560),
-            child: _HeroStatusCard(controller: widget.controller),
+            child: _HeroStatusCard(
+              controller: widget.controller,
+              onToggleConnection: widget.onToggleConnection,
+            ),
           ),
         );
         final quickSwitch = Align(
@@ -117,7 +123,11 @@ class ConnectPageBodyState extends State<ConnectPageBody> {
 }
 
 class _SplitConnectLayout extends StatelessWidget {
-  const _SplitConnectLayout({required this.controller, required this.strings});
+  const _SplitConnectLayout({
+    required this.controller,
+    required this.strings,
+    this.onToggleConnection,
+  });
 
   static const Key _firstSourceTileKey = GlobalObjectKey(
     'split-first-source-card',
@@ -126,6 +136,7 @@ class _SplitConnectLayout extends StatelessWidget {
 
   final VpnController controller;
   final AppStrings strings;
+  final Future<void> Function()? onToggleConnection;
 
   @override
   Widget build(BuildContext context) {
@@ -150,6 +161,7 @@ class _SplitConnectLayout extends StatelessWidget {
                 constraints: const BoxConstraints(maxWidth: 560),
                 child: _SplitHeroStatusAnchor(
                   controller: controller,
+                  onToggleConnection: onToggleConnection,
                   anchorHeight: sourceAnchorHeight,
                   powerButtonKey: _powerButtonKey,
                 ),
@@ -178,11 +190,13 @@ class _HeroStatusCard extends StatelessWidget {
     required this.controller,
     this.layout = _HeroStatusLayout.hero,
     this.powerButtonKey,
+    this.onToggleConnection,
   });
 
   final VpnController controller;
   final _HeroStatusLayout layout;
   final Key? powerButtonKey;
+  final Future<void> Function()? onToggleConnection;
 
   @override
   Widget build(BuildContext context) {
@@ -204,6 +218,7 @@ class _HeroStatusCard extends StatelessWidget {
         children: <Widget>[
           _PowerButton(
             controller: controller,
+            onToggleConnection: onToggleConnection,
             diameter: isSplit ? splitPowerButtonDiameter : null,
             buttonKey: powerButtonKey,
           ),
@@ -228,6 +243,7 @@ class _HeroStatusCard extends StatelessWidget {
 class _SplitHeroStatusAnchor extends StatelessWidget {
   const _SplitHeroStatusAnchor({
     required this.controller,
+    required this.onToggleConnection,
     required this.anchorHeight,
     required this.powerButtonKey,
   });
@@ -236,6 +252,7 @@ class _SplitHeroStatusAnchor extends StatelessWidget {
   static const double _statusReserveHeight = 58;
 
   final VpnController controller;
+  final Future<void> Function()? onToggleConnection;
   final double anchorHeight;
   final Key powerButtonKey;
 
@@ -267,6 +284,7 @@ class _SplitHeroStatusAnchor extends StatelessWidget {
                 top: buttonTop,
                 child: _HeroStatusCard(
                   controller: controller,
+                  onToggleConnection: onToggleConnection,
                   layout: _HeroStatusLayout.split,
                   powerButtonKey: powerButtonKey,
                 ),
@@ -282,9 +300,15 @@ class _SplitHeroStatusAnchor extends StatelessWidget {
 enum _HeroStatusLayout { hero, split }
 
 class _PowerButton extends StatelessWidget {
-  const _PowerButton({required this.controller, this.diameter, this.buttonKey});
+  const _PowerButton({
+    required this.controller,
+    this.onToggleConnection,
+    this.diameter,
+    this.buttonKey,
+  });
 
   final VpnController controller;
+  final Future<void> Function()? onToggleConnection;
   final double? diameter;
   final Key? buttonKey;
 
@@ -361,7 +385,12 @@ class _PowerButton extends StatelessWidget {
                     mouseCursor: isBusy
                         ? SystemMouseCursors.basic
                         : SystemMouseCursors.click,
-                    onTap: isBusy ? null : controller.toggleConnection,
+                    onTap: isBusy
+                        ? null
+                        : () => unawaited(
+                            (onToggleConnection ?? controller.toggleConnection)
+                                .call(),
+                          ),
                     child: SizedBox.expand(
                       child: Center(
                         child: SizedBox(

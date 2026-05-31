@@ -1,6 +1,6 @@
 # TemnyiVPN
 
-TemnyiVPN-Client is an open-source VPN client for Windows and Android, built with
+TemnyiVPN is an open-source VPN client for Windows and Android, built with
 Flutter. It provides a clean interface for managing proxy/VPN profiles,
 subscriptions, and connections powered by Xray-core and sing-box.
 
